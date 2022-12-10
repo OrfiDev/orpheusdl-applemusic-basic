@@ -111,5 +111,6 @@ Project Link: [OrpheusDL Apple Music Public GitHub Repository](https://github.co
 
 
 <!-- Credits -->
+## Credits
 
 R3AP3 - [@R3AP3](https://github.com/R3AP3) for helping out with in-depth research related to covers
