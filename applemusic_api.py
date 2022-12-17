@@ -4,7 +4,7 @@ from utils.utils import create_requests_session
 
 
 class AppleMusicApi(object):
-    def __init__(self, exception, user_token, storefront='US', language='en-US'):
+    def __init__(self, exception, user_token, storefront='US', language='en-US', lyrics_resource='lyrics'):
         self.s = create_requests_session()
         self.api_base = 'https://amp-api.music.apple.com/v1/'
 
@@ -12,6 +12,7 @@ class AppleMusicApi(object):
         self.language = language
         self.lyrics_storefront = storefront
         self.lyrics_language = language
+        self.lyrics_resource = lyrics_resource
 
         self.user_token = user_token
         self.access_token = ''
@@ -23,8 +24,8 @@ class AppleMusicApi(object):
             'authorization': 'Bearer ' + self.access_token,
             'Connection': 'Keep-Alive',
             'Content-Type': 'application/json',
-            'Origin': 'https://beta.music.apple.com',
-            'Referer': 'https://beta.music.apple.com/',
+            'Origin': 'https://music.apple.com',
+            'Referer': 'https://music.apple.com/',
             'Accept-Encoding': 'gzip, deflate, br',
             'Accept-Language': f'{self.language},en;q=0.9',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -40,7 +41,7 @@ class AppleMusicApi(object):
 
         self.lyrics_storefront = r['id']
         if force_region.lower() == self.lyrics_storefront: force_region = None
-        if force_region: print(f"Apple Music: WARNING: Selected region {force_region} is not the same as your Apple Music region {self.lyrics_storefront}, lyrics will use the region {self.lyrics_storefront}")
+        if force_region: print(f"Apple Music: WARNING: Selected region {force_region} is not the same as your Apple Music region {self.lyrics_storefront}, lyrics will use the region {self.lyrics_storefront}. Only lyrics available in both regions will be used, maybe use a copy of the module with the folder name (which determines the name of the module) and the netlocation_constant changed for lyrics only if you want credits or playlists from other regions.")
 
         self.storefront = force_region.lower() if force_region else self.lyrics_storefront
         endpoint_data = self.s.get(f'{self.api_base}storefronts/{self.storefront}', headers=self.headers())
@@ -77,11 +78,11 @@ class AppleMusicApi(object):
     
     def get_access_token(self):
         s = create_requests_session()
-        r = s.get('https://beta.music.apple.com/', headers=self.headers())
+        r = s.get('https://music.apple.com/', headers=self.headers())
         if r.status_code != 200: raise self.exception(r.text)
 
         index_js = re.search('(?<=index\.)(.*?)(?=\.js")', r.text).group(1)
-        r = s.get(f'https://beta.music.apple.com/assets/index.{index_js}.js', headers=self.headers())
+        r = s.get(f'https://music.apple.com/assets/index.{index_js}.js', headers=self.headers())
         if r.status_code != 200: raise self.exception(r.text)
 
         self.access_token = re.search('(?=eyJh)(.*?)(?=")', r.text).group(1)
@@ -108,7 +109,7 @@ class AppleMusicApi(object):
 
         if query_type == 'songs':
             params['extend[songs]'] = 'attribution,composerName,contentRating,discNumber,durationInMillis,isrc,movementCount,movementName,movementNumber,releaseDate,trackNumber,workNamedata'
-            params['include[songs]'] = 'artists,albums' + (',lyrics' if self.storefront == self.lyrics_storefront else '') # doesn't give lyrics?
+            params['include[songs]'] = 'artists,albums' + (f',{self.lyrics_resource}' if self.storefront == self.lyrics_storefront else '') # doesn't give lyrics?
             params['extend[albums]'] = 'copyright,upc'
         elif query_type == 'playlists':
             params['include[playlists]'] = 'curator'
@@ -126,7 +127,7 @@ class AppleMusicApi(object):
         return self._get(f'playlists/{playlist_id}', params={
             'include': 'curator,tracks',
             'extend': 'artwork,description,trackTypes,trackCount',
-            'include[songs]': 'artists,albums' + (',lyrics' if self.storefront == self.lyrics_storefront else ''),
+            'include[songs]': 'artists,albums' + (f',{self.lyrics_resource}' if self.storefront == self.lyrics_storefront else ''),
             'extend[songs]': 'extendedAssetUrls,attribution,composerName,contentRating,discNumber,durationInMillis,isrc,movementCount,movementName,movementNumber,releaseDate,trackNumber,workNamedata',
             'extend[albums]': 'copyright,upc'
         })['data'][0]
@@ -139,7 +140,7 @@ class AppleMusicApi(object):
         while len(tracks) + offset <= playlist_data['attributes']['trackCount']:
             tracks += self._get(f'playlists/{playlist_data["id"]}/tracks', params={
                 'offset': offset,
-                'include[songs]': 'artists,albums' + (',lyrics' if self.storefront == self.lyrics_storefront else ''),
+                'include[songs]': 'artists,albums' + (f',{self.lyrics_resource}' if self.storefront == self.lyrics_storefront else ''),
                 'extend[songs]': 'extendedAssetUrls,attribution,composerName,contentRating,discNumber,durationInMillis,isrc,movementCount,movementName,movementNumber,releaseDate,trackNumber,workNamedata',
                 'extend[albums]': 'copyright,upc',
                 'limit': 100
@@ -152,17 +153,47 @@ class AppleMusicApi(object):
 
         return tracks_list, track_data
 
-    def get_track(self, track_id: str = None, isrc: str = None):
-        params = {'filter[isrc]': isrc} if isrc else {'ids': track_id}
-        params['include'] = 'artists,albums' + (',lyrics' if self.storefront == self.lyrics_storefront else '')
+    def get_tracks_by_ids(self, track_ids: list = None, isrc: str = None):
+        if not track_ids: track_ids = []
+
+        params = {'filter[isrc]': isrc} if isrc else {'ids': ','.join(track_ids)}
+        params['include'] = 'artists,albums' + (f',{self.lyrics_resource}' if self.storefront == self.lyrics_storefront else '')
         params['extend'] = 'attribution,composerName,contentRating,discNumber,durationInMillis,isrc,movementCount,movementName,movementNumber,releaseDate,trackNumber,workNamedata'
         params['extend[albums]'] = 'copyright,upc'
-        return self._get('songs', params)['data'][0]
 
-    def get_lyrics(self, track_id):
-        print(self.lyrics_storefront, self.language)
+        return self._get('songs', params)['data']
+
+    def get_track(self, track_id: str = None):
+        return self.get_tracks_by_ids([track_id])[0]
+    
+    @staticmethod
+    def get_lyrics_support(track_attributes):
+        # could technically be a single line in the lambda
+        if track_attributes.get('hasTimeSyncedLyrics'):
+            return 1 if track_attributes.get('isVocalAttenuationAllowed') else 2
+        else:
+            return 3 if track_attributes.get('hasLyrics') else 4
+    
+    def get_track_by_isrc(self, isrc: str, album_name: str):
+        results = self.get_tracks_by_ids(isrc=isrc)
+
+        correct_region_results = [i for i in results if i['attributes']['url'].split('i=')[-1].split('&')[0] == i['id']]
+        incorrect_region_results = [i for i in results if i['attributes']['url'].split('i=')[-1].split('&')[0] != i['id']]
+
+        correct_region_results_sorted_by_track_number = sorted(correct_region_results, key=lambda x: x['attributes'].get('trackNumber', 1))
+        
+        fix_results_by_album = lambda list_to_sort: sorted(list_to_sort, key=lambda x: (x['attributes']['albumName'] != album_name))
+        correct_album_correct_region_results = fix_results_by_album(correct_region_results_sorted_by_track_number)
+        correct_album_incorrect_region_results = fix_results_by_album(incorrect_region_results)
+
+        correct_album_prioritised_lyrics_results = sorted(correct_album_correct_region_results, key=lambda x: self.get_lyrics_support(x['attributes']))
+        return correct_album_prioritised_lyrics_results + correct_album_incorrect_region_results
+
+    def get_lyrics(self, track_id, lyrics_resource=None):
+        if not lyrics_resource: lyrics_resource = self.lyrics_resource
+
         try:
-            data = self._get(f'songs/{track_id}/lyrics', storefront=self.lyrics_storefront, language=self.language)
+            data = self._get(f'songs/{track_id}/{lyrics_resource}', storefront=self.lyrics_storefront, language=self.language)
         except self.exception:
             return None
 

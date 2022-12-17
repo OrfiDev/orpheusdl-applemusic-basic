@@ -81,6 +81,7 @@ TODO
     "lyrics_type": "custom",
     "lyrics_custom_ms_sync": false,
     "lyrics_language_override": "en",
+    "lyrics_syllable_sync": true,
     "user_token": "base64 encoded token"
 },
 ```
@@ -97,6 +98,8 @@ TODO
 `lyrics_custom_ms_sync`: Lets you save milliseconds instead of seconds to preserve all data, although players usually only accept the default 10ms synced data, leave this disabled unless you know what you're doing
 
 `lyrics_language_override`: Since lyrics require you to request in the region of your account, choose a language from that region to use with lyrics
+
+`lyrics_syllable_sync`: Enable downloading lyrics data with word or even syllable sync, multiple vocalists, overlapping vocals, etc, will need my custom format to work
 
 `user_token`: Most important, you must input your user token from the web player
 

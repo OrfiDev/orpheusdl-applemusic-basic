@@ -25,7 +25,8 @@ module_information = ModuleInformation(
         'print_original_cover_url': False,
         'lyrics_type': 'standard', # 'custom' or 'standard'
         'lyrics_custom_ms_sync': False,
-        'lyrics_language_override': ''
+        'lyrics_language_override': '',
+        'lyrics_syllable_sync': False
     },
     netlocation_constant = 'apple',
     test_url = 'https://music.apple.com/us/playlist/beat-saber-x-monstercat/pl.0ccb67a275dc416c9dadd6fe1f80d518',
@@ -39,8 +40,13 @@ class ModuleInterface:
         self.tsc = module_controller.temporary_settings_controller
         self.module_controller = module_controller
         self.msettings = module_controller.module_settings
+        self.exception = module_controller.module_error
+        self.oprint = module_controller.printer_controller.oprint
 
-        self.session = AppleMusicApi(module_controller.module_error, self.msettings['user_token'])
+        self.lyrics_resource = 'syllable-lyrics' if self.msettings['lyrics_syllable_sync'] else 'lyrics'
+        if self.msettings['lyrics_syllable_sync'] and self.msettings['lyrics_type'] == 'standard': raise self.exception("Syllable synced lyrics cannot be downloaded with the standard lyrics type.")
+
+        self.session = AppleMusicApi(module_controller.module_error, self.msettings['user_token'], lyrics_resource=self.lyrics_resource)
 
         access_token = self.tsc.read('access_token')
         if access_token and json.loads(base64.b64decode(access_token.split('.')[1] + '==').decode('utf-8'))['exp'] > module_controller.get_current_timestamp():
@@ -90,7 +96,7 @@ class ModuleInterface:
         if file_format is ImageFileTypeEnum.png and (self.msettings['get_original_cover'] or self.msettings['print_original_cover_url']):
             result = 'https://a1.mzstatic.com/r40/' + '/'.join(unparsed_url.split('/')[5:-1])
             if self.msettings['print_original_cover_url']: 
-                self.module_controller.printer_controller.oprint('Original cover URL: ' + result)
+                self.oprint('Original cover URL: ' + result)
 
             if self.msettings['get_original_cover']:
                 cover_extension = unparsed_url.split('.')[-1]
@@ -196,34 +202,132 @@ class ModuleInterface:
             credits_extra_kwargs = {'data': {track_id: track_data}}
         )
     
-    def ts_format(self, input_ts):
+    @staticmethod
+    def get_timestamp(input_ts):
         mins = int(input_ts.split(':')[-2]) if ':' in input_ts else 0
-        # strip the "s" from the float value
         secs = float(input_ts.split(':')[-1]) if ':' in input_ts else float(input_ts.replace('s', ''))
-        # yeah really hacky, don't do that, needs a proper timestamp parser
-        if mins == 0:
-            mins = int(secs // 60)
-            secs = secs % 60
+        return mins * 60 + secs
+    
+    def ts_format(self, input_ts, already_secs=False):
+        ts = input_ts if already_secs else self.get_timestamp(input_ts)
+        mins = int(ts // 60)
+        secs = ts % 60
         return f'{mins:0>2}:{secs:06.3f}' if self.msettings['lyrics_custom_ms_sync'] else f'{mins:0>2}:{secs:05.2f}'
     
-    def get_track_lyrics(self, track_id, data = {}):
-        if track_id in data:
-            if 'lyrics' in data[track_id]['relationships'] and data[track_id]['relationships']['lyrics'] and data[track_id]['relationships']['lyrics']['data']:
-                lyrics_xml = data[track_id]['relationships']['lyrics']['data'][0]['attributes']['ttml']
-            elif data[track_id]['attributes']['hasLyrics']:
-                lyrics_data = self.session.get_lyrics(track_id)
-                lyrics_xml = lyrics_data['data'][0]['attributes']['ttml'] if lyrics_data else None
-            else:
-                lyrics_xml = None
-        else:
-            lyrics_xml = self.session.get_lyrics(track_id)['data'][0]['attributes']['ttml']
+    def parse_lyrics_verse(self, lines, multiple_agents, custom_lyrics, add_timestamps=True):
+        # using:
+        # [start new line timestamp]lyrics<end new line timestamp>
+        # also, there's the enhanced format that we don't use which is:
+        # [last line end timestamp] <start new line timestamp> lyrics 
         
+        synced_lyrics_list = []
+        unsynced_lyrics_list = []
+        
+        for line in lines:
+            if isinstance(line, dict):
+                if multiple_agents:
+                    agent = line['@ttm:agent']
+                    if agent[0] != 'v': raise self.exception(f'Weird agent: {agent}')
+                    agent_num = int(agent[1:])
+
+                if 'span' in line:
+                    words = line['span']
+                    if not isinstance(words, list): words = [words]
+                    
+                    unsynced_line = f'{agent_num}: ' if multiple_agents else ''
+                    synced_line = f"[{self.ts_format(line['@begin'])}]" if add_timestamps else ''
+                    synced_line += unsynced_line
+
+                    for word in words:
+                        if '@ttm:role' in word:
+                            if word['@ttm:role'] != 'x-bg': raise self.exception(f'Strange lyric role {word["@ttm:role"]}')
+                            if word.get('@prespaced'): unsynced_line += ' '
+
+                            _, bg_verse_synced_lyrics_list = self.parse_lyrics_verse(word['span'], False, False, False)
+                            unsynced_line += ''.join([i[2] for i in bg_verse_synced_lyrics_list])
+
+                            synced_bg_line = ''
+                            first_ts = 0
+                            for bg_word_begin, bg_word_end, bg_word_text in bg_verse_synced_lyrics_list:
+                                if not synced_bg_line and add_timestamps:
+                                    first_ts = bg_word_begin
+                                    synced_bg_line = f"[{self.ts_format(first_ts, already_secs=True)}]"
+                                    if multiple_agents: synced_bg_line += f'{agent_num}: '
+                                synced_bg_line += bg_word_text
+                                if custom_lyrics and add_timestamps: synced_bg_line += f"<{self.ts_format(bg_word_end, already_secs=True)}>"
+
+                            synced_lyrics_list.append((first_ts, first_ts, synced_bg_line))
+                        else:
+                            if word.get('@prespaced'):
+                                synced_line += ' '
+                                unsynced_line += ' '
+                            
+                            synced_line += word['#text']
+                            unsynced_line += word['#text']
+
+                            if custom_lyrics and add_timestamps: synced_line += f"<{self.ts_format(word['@end'])}>"
+
+                    synced_lyrics_list.append((self.get_timestamp(line['@begin']), self.get_timestamp(line['@end']), synced_line))
+                    unsynced_lyrics_list.append(unsynced_line)
+                elif '#text' in line:
+                    synced_line = f"[{self.ts_format(line['@begin'])}]" if add_timestamps else ''
+                    if line.get('@prespaced'): synced_line += ' '
+                    synced_line += line['#text']
+
+                    # fix timing in Karafun, tried with syllable synced lyrics and the sudden jump at the last letter isn't worth it
+                    # however with a full line it's almost mandatory
+                    if custom_lyrics and add_timestamps: synced_line = f"{synced_line[:-1]}<{self.ts_format(line['@end'])}>{synced_line[-1]}"
+                    synced_lyrics_list.append((self.get_timestamp(line['@begin']), self.get_timestamp(line['@end']), synced_line))
+
+                    unsynced_line = f'{agent_num}: ' if multiple_agents else ''
+                    unsynced_line += line['#text']
+                    unsynced_lyrics_list.append(unsynced_line)
+                else:
+                    raise self.exception(f'Unknown lyrics data: {line}')
+            elif isinstance(line, str):
+                unsynced_lyrics_list.append(line)
+            else:
+                raise self.exception(f'Invalid lyrics type? {line}, type {type(line)}')
+        return unsynced_lyrics_list, synced_lyrics_list
+    
+    def get_lyrics_xml(self, track_id, data = {}):
+        # in theory the case where the lyrics and set storefronts differ this is inefficient
+        # but it is simpler this way
+        track_data = data[track_id] if track_id in data else self.session.get_track(track_id)
+
+        lyrics_data_dict = track_data['relationships'].get(self.lyrics_resource)
+        if lyrics_data_dict and lyrics_data_dict.get('data') and lyrics_data_dict['data'][0].get('attributes'):
+            lyrics_xml = lyrics_data_dict['data'][0]['attributes']['ttml']
+        elif track_data['attributes']['hasLyrics']:
+            lyrics_data_dict = self.session.get_lyrics(track_id)
+            track_data['relationships'][self.lyrics_resource] = lyrics_data_dict
+            lyrics_xml = lyrics_data_dict['data'][0]['attributes']['ttml'] if lyrics_data_dict and lyrics_data_dict.get('data') else None
+            if not lyrics_xml:
+                if self.lyrics_resource != 'lyrics':
+                    # unlikely to work, but try it anyway
+                    self.oprint("Warning: lyrics resource not found, trying fallback")
+                    lyrics_data_dict = self.session.get_lyrics(track_id, 'lyrics')
+                    track_data['relationships'][self.lyrics_resource] = lyrics_data_dict
+                    lyrics_xml = lyrics_data_dict['data'][0]['attributes']['ttml'] if lyrics_data_dict and lyrics_data_dict.get('data') else None
+
+                if not lyrics_xml:
+                    self.oprint("Warning: lyrics for this track are not available to this Apple Music account.")
+        else:
+            lyrics_xml = None
+        
+        return lyrics_xml
+    
+    def get_track_lyrics(self, track_id, data = {}):
+        lyrics_xml = self.get_lyrics_xml(track_id, data)
         if not lyrics_xml: return LyricsInfo(embedded=None, synced=None)
 
-        lyrics_dict = xmltodict.parse(lyrics_xml)
+        lyrics_dict = xmltodict.parse(lyrics_xml.replace('> <span', '><span prespaced="true"'))
         # print(json.dumps(lyrics_dict, indent=4, sort_keys=True))
-        if lyrics_dict['tt']['@itunes:timing'] != 'Line' and lyrics_dict['tt']['@itunes:timing'] != 'None': raise Exception(f"Unknown lyrics format {lyrics_dict['tt']['@itunes:timing']}")
-        
+        if lyrics_dict['tt']['@itunes:timing'] not in ['None', 'Line', 'Word']: raise Exception(f"Unknown lyrics format {lyrics_dict['tt']['@itunes:timing']}")
+        is_synced = lyrics_dict['tt']['@itunes:timing'] != 'None'
+        multiple_agents = isinstance(lyrics_dict['tt']['head']['metadata'].get('ttm:agent'), list)
+        custom_lyrics = self.msettings['lyrics_type'] == 'custom'
+
         synced_lyrics_list = []
         unsynced_lyrics_list = []
         
@@ -231,53 +335,33 @@ class ModuleInterface:
         if not isinstance(verses, list): verses = [verses]
         
         for verse in verses:
-            # using:
-            # [start new line timestamp]lyrics<end new line timestamp>
-            # also, there's the enhanced format that we don't use which is:
-            # [last line end timestamp] <start new line timestamp> lyrics 
-            
             lines = verse['p']
             if not isinstance(lines, list): lines = [lines]
-            
-            if '#text' in lines[0]:
-                for line in lines:
-                    if lyrics_dict['tt']['@itunes:timing'] == 'Line':
-                        new_line = f"[{self.ts_format(line['@begin'])}]{line['#text']}"
-                        if self.msettings['lyrics_type'] == 'custom': new_line += f"<{self.ts_format(line['@end'])}>"
-                        synced_lyrics_list.append(new_line)
-                    unsynced_lyrics_list.append(line['#text'])
-            else:
-                unsynced_lyrics_list += lines
-            
-            if lyrics_dict['tt']['@itunes:timing'] == 'Line': synced_lyrics_list.append(f"[{self.ts_format(verse['@end'])}]")
+
+            verse_unsynced_lyrics_list, verse_synced_lyrics_list = self.parse_lyrics_verse(lines, multiple_agents, custom_lyrics)
+            unsynced_lyrics_list += verse_unsynced_lyrics_list
+            synced_lyrics_list += verse_synced_lyrics_list
+        
+            if is_synced: synced_lyrics_list.append((self.get_timestamp(verse['@end']), self.get_timestamp(verse['@end']), f"[{self.ts_format(verse['@end'])}]"))
             unsynced_lyrics_list.append('')
+
+        sorted_synced_lyrics_list = [i[2] for i in sorted(synced_lyrics_list, key=lambda x: x[0])]
 
         return LyricsInfo(
             embedded = '\n'.join(unsynced_lyrics_list[:-1]),
-            synced = '\n'.join(synced_lyrics_list[:-1])
+            synced = '\n'.join(sorted_synced_lyrics_list[:-1])
         )
 
     def get_track_credits(self, track_id, data = {}):
-        if track_id in data:
-            if 'lyrics' in data[track_id]['relationships'] and data[track_id]['relationships']['lyrics'] and data[track_id]['relationships']['lyrics']['data']:
-                lyrics_xml = data[track_id]['relationships']['lyrics']['data'][0]['attributes']['ttml']
-            elif data[track_id]['attributes']['hasLyrics']:
-                lyrics_data = self.session.get_lyrics(track_id)
-                lyrics_xml = lyrics_data['data'][0]['attributes']['ttml'] if lyrics_data else None
-            else:
-                lyrics_xml = None
-        else:
-            lyrics_xml = self.session.get_lyrics(track_id)['data'][0]['attributes']['ttml']
-
+        lyrics_xml = self.get_lyrics_xml(track_id, data)
         if not lyrics_xml: return []
         
         lyrics_dict = xmltodict.parse(lyrics_xml)
         return [CreditsInfo('Lyricist', lyrics_dict['tt']['head']['metadata']['iTunesMetadata']['songwriters']['songwriter'])]
-        
 
     def search(self, query_type: DownloadTypeEnum, query, track_info: TrackInfo = None, limit = 10):
         if track_info and track_info.tags.isrc:
-            results = [self.session.get_track(isrc=track_info.tags.isrc)]
+            results = self.session.get_track_by_isrc(track_info.tags.isrc, track_info.album)
         if not (track_info and track_info.tags.isrc) or not results:
             results = self.session.search(query_type.name + 's' if query_type is not DownloadTypeEnum.track else 'songs', query, limit)
 
