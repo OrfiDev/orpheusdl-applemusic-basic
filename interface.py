@@ -237,6 +237,7 @@ class ModuleInterface:
                     unsynced_line = f'{agent_num}: ' if multiple_agents else ''
                     synced_line = f"[{self.ts_format(line['@begin'])}]" if add_timestamps else ''
                     synced_line += unsynced_line
+                    if add_timestamps and custom_lyrics: synced_line += f"<{self.ts_format(line['@begin'])}>"
 
                     for word in words:
                         if '@ttm:role' in word:
@@ -253,6 +254,7 @@ class ModuleInterface:
                                     first_ts = bg_word_begin
                                     synced_bg_line = f"[{self.ts_format(first_ts, already_secs=True)}]"
                                     if multiple_agents: synced_bg_line += f'{agent_num}: '
+                                    if add_timestamps and multiple_agents: synced_bg_line += f"<{self.ts_format(first_ts, already_secs=True)}>"
                                 synced_bg_line += bg_word_text
                                 if custom_lyrics and add_timestamps: synced_bg_line += f"<{self.ts_format(bg_word_end, already_secs=True)}>"
 
@@ -271,12 +273,11 @@ class ModuleInterface:
                     unsynced_lyrics_list.append(unsynced_line)
                 elif '#text' in line:
                     synced_line = f"[{self.ts_format(line['@begin'])}]" if add_timestamps else ''
+                    if add_timestamps and custom_lyrics: synced_line += f"<{self.ts_format(line['@begin'])}>"
                     if line.get('@prespaced'): synced_line += ' '
                     synced_line += line['#text']
 
-                    # fix timing in Karafun, tried with syllable synced lyrics and the sudden jump at the last letter isn't worth it
-                    # however with a full line it's almost mandatory
-                    if custom_lyrics and add_timestamps: synced_line = f"{synced_line[:-1]}<{self.ts_format(line['@end'])}>{synced_line[-1]}"
+                    if custom_lyrics and add_timestamps: synced_line += f"<{self.ts_format(line['@end'])}>"
                     synced_lyrics_list.append((self.get_timestamp(line['@begin']), self.get_timestamp(line['@end']), synced_line))
 
                     unsynced_line = f'{agent_num}: ' if multiple_agents else ''
@@ -285,6 +286,8 @@ class ModuleInterface:
                 else:
                     raise self.exception(f'Unknown lyrics data: {line}')
             elif isinstance(line, str):
+                # TODO: more research needed on Apple + Genius sourced unsynced lyrics
+                # there are some random unicode things like ’ which we might want to filter out
                 unsynced_lyrics_list.append(line)
             else:
                 raise self.exception(f'Invalid lyrics type? {line}, type {type(line)}')
