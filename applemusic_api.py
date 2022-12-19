@@ -26,7 +26,7 @@ class AppleMusicApi(object):
             'Content-Type': 'application/json',
             'Origin': 'https://music.apple.com',
             'Referer': 'https://music.apple.com/',
-            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept-Encoding': 'gzip, deflate',
             'Accept-Language': f'{self.language},en;q=0.9',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
                           '(KHTML, like Gecko) Chrome/86.0.4240.183 Safari/537.36',
@@ -78,7 +78,7 @@ class AppleMusicApi(object):
     
     def get_access_token(self):
         s = create_requests_session()
-        r = s.get('https://music.apple.com/', headers=self.headers())
+        r = s.get('https://music.apple.com/us/search', headers=self.headers())
         if r.status_code != 200: raise self.exception(r.text)
 
         index_js = re.search('(?<=index\.)(.*?)(?=\.js")', r.text).group(1)
