@@ -328,7 +328,7 @@ class ModuleInterface:
         # print(json.dumps(lyrics_dict, indent=4, sort_keys=True))
         if lyrics_dict['tt']['@itunes:timing'] not in ['None', 'Line', 'Word']: raise Exception(f"Unknown lyrics format {lyrics_dict['tt']['@itunes:timing']}")
         is_synced = lyrics_dict['tt']['@itunes:timing'] != 'None'
-        multiple_agents = isinstance(lyrics_dict['tt']['head']['metadata'].get('ttm:agent'), list)
+        multiple_agents = isinstance(lyrics_dict['tt'].get('head', {}).get('metadata', {}).get('ttm:agent'), list)
         custom_lyrics = self.msettings['lyrics_type'] == 'custom'
 
         synced_lyrics_list = []
@@ -358,15 +358,18 @@ class ModuleInterface:
     def get_track_credits(self, track_id, data = {}):
         lyrics_xml = self.get_lyrics_xml(track_id, data)
         if not lyrics_xml: return []
+
+        try:
+            songwriters = lyrics_dict['tt']['head']['metadata']['iTunesMetadata']['songwriters']['songwriter']
+        except:
+            return []
         
         lyrics_dict = xmltodict.parse(lyrics_xml)
-        return [CreditsInfo('Lyricist', lyrics_dict['tt']['head']['metadata']['iTunesMetadata']['songwriters']['songwriter'])]
+        return [CreditsInfo('Lyricist', songwriters)]
 
     def search(self, query_type: DownloadTypeEnum, query, track_info: TrackInfo = None, limit = 10):
-        if track_info and track_info.tags.isrc:
-            results = self.session.get_track_by_isrc(track_info.tags.isrc, track_info.album)
-        if not (track_info and track_info.tags.isrc) or not results:
-            results = self.session.search(query_type.name + 's' if query_type is not DownloadTypeEnum.track else 'songs', query, limit)
+        results = self.session.get_track_by_isrc(track_info.tags.isrc, track_info.album) if track_info and track_info.tags.isrc else self.session.search(query_type.name + 's' if query_type is not DownloadTypeEnum.track else 'songs', query, limit)
+        if not results: return []
 
         return [SearchResult(
                 name = i['attributes']['name'],
