@@ -81,8 +81,8 @@ class AppleMusicApi(object):
         r = s.get('https://music.apple.com/us/search', headers=self.headers())
         if r.status_code != 200: raise self.exception(r.text)
 
-        index_js = re.search('(?<=index\.)(.*?)(?=\.js")', r.text).group(1)
-        r = s.get(f'https://music.apple.com/assets/index.{index_js}.js', headers=self.headers())
+        index_js = re.search('(?<=index-)(.*?)(?=\.js")', r.text).group(1)
+        r = s.get(f'https://music.apple.com/assets/index-{index_js}.js', headers=self.headers())
         if r.status_code != 200: raise self.exception(r.text)
 
         self.access_token = re.search('(?=eyJh)(.*?)(?=")', r.text).group(1)
