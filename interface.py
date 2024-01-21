@@ -12,15 +12,18 @@ from .applemusic_api import AppleMusicApi
 module_information = ModuleInformation(
     service_name = 'Apple Music (Basic Support)',
     module_supported_modes = ModuleModes.covers | ModuleModes.lyrics | ModuleModes.credits | ModuleModes.playlist,
-    session_settings = {'user_token': ''},
+    session_settings = {
+        'email': '',
+        'password': '',
+        'force_region': '',
+        'selected_language': 'en'
+    },
     session_storage_variables=[
         'storefront', 'language', 'lyrics_language', 'lyrics_storefront',
         'verified_storefront', 'verified_language', 'verified_lyrics_language', 'verified_user_token',
         'access_token'
     ],
     global_settings = {
-        'force_region': '',
-        'selected_language': 'en',
         'get_original_cover': True,
         'print_original_cover_url': False,
         'lyrics_type': 'standard', # 'custom' or 'standard'
@@ -30,8 +33,7 @@ module_information = ModuleInformation(
     },
     netlocation_constant = 'apple',
     test_url = 'https://music.apple.com/us/playlist/beat-saber-x-monstercat/pl.0ccb67a275dc416c9dadd6fe1f80d518',
-    url_decoding = ManualEnum.manual,
-    login_behaviour = ManualEnum.manual
+    url_decoding = ManualEnum.manual
 )
 
 
@@ -46,24 +48,29 @@ class ModuleInterface:
         self.lyrics_resource = 'syllable-lyrics' if self.msettings['lyrics_syllable_sync'] else 'lyrics'
         if self.msettings['lyrics_syllable_sync'] and self.msettings['lyrics_type'] == 'standard': raise self.exception("Syllable synced lyrics cannot be downloaded with the standard lyrics type.")
 
-        self.session = AppleMusicApi(module_controller.module_error, self.msettings['user_token'], lyrics_resource=self.lyrics_resource)
+        self.session = AppleMusicApi(self.exception, lyrics_resource=self.lyrics_resource)
 
         access_token = self.tsc.read('access_token')
         if access_token and json.loads(base64.b64decode(access_token.split('.')[1] + '==').decode('utf-8'))['exp'] > module_controller.get_current_timestamp():
             self.session.access_token = access_token
         else:
             self.tsc.set('access_token', self.session.get_access_token())
+        
+        user_token = self.tsc.read('user_token')
+        if user_token:
+            self.session.user_token = user_token
+            # print(self.session.check_active_subscription())
 
-        if self.tsc.read('storefront') and self.tsc.read('language') and self.tsc.read('lyrics_language') and self.tsc.read('verified_storefront') == self.msettings['force_region'] and self.tsc.read('verified_language') == self.msettings['selected_language'] and self.tsc.read('verified_lyrics_language') == self.msettings['lyrics_language_override'] and self.tsc.read('verified_user_token') == self.msettings['user_token']:
+        if self.tsc.read('storefront') and self.tsc.read('language') and self.tsc.read('lyrics_language') and self.tsc.read('verified_storefront') == self.msettings['force_region'] and self.tsc.read('verified_language') == self.msettings['selected_language'] and self.tsc.read('verified_lyrics_language') == self.msettings['lyrics_language_override']:
             self.session.storefront = self.tsc.read('storefront')
             self.session.language = self.tsc.read('language')
             self.session.lyrics_storefront = self.tsc.read('lyrics_storefront')
             self.session.lyrics_language = self.tsc.read('lyrics_language')
-        else:
+        elif user_token:
             self.set_regions()
     
     def set_regions(self):
-        account_storefront, language_tag, lyrics_language_tag, lyrics_storefront = self.session.get_languages(self.msettings['force_region'], self.msettings['selected_language'], self.msettings['lyrics_language_override'])
+        account_storefront, account_active, language_tag, lyrics_language_tag, lyrics_storefront = self.session.get_account_details(self.msettings['force_region'], self.msettings['selected_language'], self.msettings['lyrics_language_override'])
         
         self.tsc.set('storefront', account_storefront)
         self.tsc.set('language', language_tag)
@@ -73,7 +80,12 @@ class ModuleInterface:
         self.tsc.set('verified_storefront', self.msettings['force_region'])
         self.tsc.set('verified_language', self.msettings['selected_language'])
         self.tsc.set('verified_lyrics_language', self.msettings['lyrics_language_override'])
-        self.tsc.set('verified_user_token', self.msettings['user_token'])
+    
+    def login(self, email, password):
+        user_token = self.session.auth(email, password)
+        self.tsc.set('user_token', user_token)
+
+        self.set_regions()
 
     @staticmethod
     def custom_url_parse(link):
